@@ -1,0 +1,61 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Test and build wheels
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The plugins target the CPython that Endstone ships.
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install build tooling
+        run: python -m pip install --upgrade pip build
+
+      # The tests stub out the endstone module themselves and use plain unittest, so nothing else
+      # needs installing and no Endstone runtime is required here.
+      - name: Test
+        working-directory: modified
+        run: python -m unittest discover -s tests -v
+
+      - name: Build stock wheel
+        working-directory: stock
+        run: python -m build --wheel
+
+      - name: Build modified wheel
+        working-directory: modified
+        run: python -m build --wheel
+
+      # Both wheels are named endlinkguard-<version>, so they can share one artifact without
+      # colliding: stock is 0.1.6 and modified is 1.0.3.
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: endlinkguard-wheels
+          path: |
+            stock/dist/*.whl
+            modified/dist/*.whl
+          if-no-files-found: error
+
+      # The patch is pinned to one upstream Endstone commit and silently rots if that pin drifts.
+      # This does not apply it - it only checks the file is still present and well-formed.
+      - name: Check the Endstone patch is intact
+        run: |
+          test -f modified-endstone/src/patches/endstone-pre-login-identity.patch
+          grep -q "player_pre_login_event.h" modified-endstone/src/patches/endstone-pre-login-identity.patch
+          echo "Endstone patch present and references the expected new header."

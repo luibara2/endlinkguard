@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "endlinkguard"
+version = "0.1.6"
+description = "Verifies proxy joins on unmodified Endstone and exposes proxy-backed identity data."
+requires-python = ">=3.10"
+
+[project.entry-points."endstone"]
+endlinkguard = "endlinkguard:EndlinkGuardPlugin"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/endlinkguard"]

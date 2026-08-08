@@ -1,0 +1,17 @@
+# The backend must only accept game traffic from these proxy addresses.
+allowed_proxy_ips = ["127.0.0.1", "::1"]
+
+# The proxy's backendVerification endpoint.
+proxy_verify_url = "http://127.0.0.1:19135/verify"
+
+# Must exactly match backendVerification.sharedSecret in proxy config.properties.
+shared_secret = "change-this-shared-secret"
+
+request_timeout_seconds = 2.0
+
+# Persist operator state independently of BDS when its native XUID is blank.
+proxy_permission_store_enabled = true
+
+# Optional verbose diagnostics retained from the legacy plugin.
+debug_interactions = false
+debug_movement = false

@@ -1,0 +1,15 @@
+# The backend must only accept game traffic from these proxy addresses.
+# Add the proxy's private/VPN address when it runs on another machine.
+allowed_proxy_ips = ["127.0.0.1", "::1"]
+
+# The proxy's backendVerification endpoint.
+proxy_verify_url = "http://127.0.0.1:19135/verify"
+
+# Must exactly match backendVerification.sharedSecret in proxy config.properties.
+shared_secret = "change-this-shared-secret"
+
+request_timeout_seconds = 2.0
+
+# Keeps compatibility with proxy-permissions.json written by verifier 0.1.x.
+restore_legacy_operator_store = true
+

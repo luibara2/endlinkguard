@@ -1,0 +1,205 @@
+diff --git a/endstone/event/__init__.py b/endstone/event/__init__.py
+index 825ebdf..8b33de3 100644
+--- a/endstone/event/__init__.py
++++ b/endstone/event/__init__.py
+@@ -71,6 +71,7 @@ __getattr__, __dir__, __all__ = lazy.attach(
+             "PlayerJumpEvent",
+             "PlayerKickEvent",
+             "PlayerLoginEvent",
++            "PlayerPreLoginEvent",
+             "PlayerMoveEvent",
+             "PlayerPickupItemEvent",
+             "PlayerPortalEvent",
+diff --git a/endstone/event/__init__.pyi b/endstone/event/__init__.pyi
+index 46e5263..15ecc64 100644
+--- a/endstone/event/__init__.pyi
++++ b/endstone/event/__init__.pyi
+@@ -69,6 +69,7 @@ __all__ = [
+     "PlayerJumpEvent",
+     "PlayerKickEvent",
+     "PlayerLoginEvent",
++    "PlayerPreLoginEvent",
+     "PlayerMoveEvent",
+     "PlayerPickupItemEvent",
+     "PlayerPortalEvent",
+@@ -859,6 +860,27 @@ class ServerEvent(Event):
+     Represents a server-related event
+     """
+ 
++class PlayerPreLoginEvent(ServerEvent, Cancellable):
++    """
++    Called after login validation but before BDS chooses and loads the native player-data record.
++    """
++    @property
++    def name(self) -> str: ...
++    @property
++    def xuid(self) -> str: ...
++    @xuid.setter
++    def xuid(self, arg1: str) -> None: ...
++    @property
++    def unique_id(self) -> str: ...
++    @unique_id.setter
++    def unique_id(self, arg1: str) -> None: ...
++    @property
++    def address(self) -> SocketAddress: ...
++    @property
++    def kick_message(self) -> str: ...
++    @kick_message.setter
++    def kick_message(self, arg1: str) -> None: ...
++
+ class BroadcastMessageEvent(ServerEvent, Cancellable):
+     """
+     Event triggered for server broadcast messages such as from Server.broadcast
+diff --git a/include/endstone/endstone.hpp b/include/endstone/endstone.hpp
+index 2a9831a..f9c428d 100644
+--- a/include/endstone/endstone.hpp
++++ b/include/endstone/endstone.hpp
+@@ -105,6 +105,7 @@
+ #include "event/player/player_jump_event.h"
+ #include "event/player/player_kick_event.h"
+ #include "event/player/player_login_event.h"
++#include "event/player/player_pre_login_event.h"
+ #include "event/player/player_move_event.h"
+ #include "event/player/player_pickup_item_event.h"
+ #include "event/player/player_portal_event.h"
+diff --git a/include/endstone/event/player/player_pre_login_event.h b/include/endstone/event/player/player_pre_login_event.h
+new file mode 100644
+index 0000000..be3a76a
+--- /dev/null
++++ b/include/endstone/event/player/player_pre_login_event.h
+@@ -0,0 +1,65 @@
++// Copyright (c) 2024, The Endstone Project. (https://endstone.dev) All Rights Reserved.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++#pragma once
++
++#include <string>
++#include <utility>
++
++#include "endstone/event/cancellable.h"
++#include "endstone/event/server/server_event.h"
++#include "endstone/util/socket_address.h"
++
++namespace endstone {
++
++/**
++ * @brief Called after BDS validates a LoginPacket but before it loads player data.
++ *
++ * A trusted proxy plugin may replace xuid and unique_id here. The values are
++ * copied back into PlayerAuthenticationInfo before BDS constructs
++ * PlayerStorageIds, allowing the native XUID-backed record to be selected.
++ */
++class PlayerPreLoginEvent : public Cancellable<ServerEvent> {
++public:
++    ENDSTONE_EVENT(PlayerPreLoginEvent);
++    PlayerPreLoginEvent(std::string name, std::string xuid, std::string unique_id, SocketAddress address,
++                        std::string message = "")
++        : Cancellable(false), name_(std::move(name)), xuid_(std::move(xuid)), unique_id_(std::move(unique_id)),
++          address_(std::move(address)), message_(std::move(message))
++    {
++    }
++    ~PlayerPreLoginEvent() override = default;
++
++    [[nodiscard]] const std::string &getName() const { return name_; }
++
++    [[nodiscard]] const std::string &getXuid() const { return xuid_; }
++    void setXuid(std::string xuid) { xuid_ = std::move(xuid); }
++
++    [[nodiscard]] const std::string &getUniqueId() const { return unique_id_; }
++    void setUniqueId(std::string unique_id) { unique_id_ = std::move(unique_id); }
++
++    [[nodiscard]] SocketAddress getAddress() const { return address_; }
++
++    [[nodiscard]] const std::string &getKickMessage() const { return message_; }
++    void setKickMessage(std::string message) { message_ = std::move(message); }
++
++private:
++    std::string name_;
++    std::string xuid_;
++    std::string unique_id_;
++    SocketAddress address_;
++    std::string message_;
++};
++
++}  // namespace endstone
+diff --git a/src/endstone/python/event.cpp b/src/endstone/python/event.cpp
+index b474c10..82722c9 100644
+--- a/src/endstone/python/event.cpp
++++ b/src/endstone/python/event.cpp
+@@ -324,5 +324,16 @@ void init_event(py::module_ &m, py::class_<Event> &event)
+ 
+     // Server events
+     py::class_<ServerEvent, Event>(m, "ServerEvent", "Represents a server-related event");
++    py::class_<PlayerPreLoginEvent, ServerEvent, ICancellable>(
++        m, "PlayerPreLoginEvent",
++        "Called after login validation but before BDS chooses and loads the native player-data record.")
++        .def_property_readonly("name", &PlayerPreLoginEvent::getName, "Gets the player's login name.")
++        .def_property("xuid", &PlayerPreLoginEvent::getXuid, &PlayerPreLoginEvent::setXuid,
++                      "Gets or sets the XUID used to load native player data.")
++        .def_property("unique_id", &PlayerPreLoginEvent::getUniqueId, &PlayerPreLoginEvent::setUniqueId,
++                      "Gets or sets the UUID used to load native player data.")
++        .def_property_readonly("address", &PlayerPreLoginEvent::getAddress, "Gets the connecting address.")
++        .def_property("kick_message", &PlayerPreLoginEvent::getKickMessage, &PlayerPreLoginEvent::setKickMessage,
++                      "Gets or sets the message displayed when the event is cancelled.");
+     py::class_<BroadcastMessageEvent, ServerEvent, ICancellable>(
+         m, "BroadcastMessageEvent", "Event triggered for server broadcast messages such as from Server.broadcast")
+diff --git a/src/endstone/runtime/bedrock_hooks/server_network_handler.cpp b/src/endstone/runtime/bedrock_hooks/server_network_handler.cpp
+index 542608b..6d943ca 100644
+--- a/src/endstone/runtime/bedrock_hooks/server_network_handler.cpp
++++ b/src/endstone/runtime/bedrock_hooks/server_network_handler.cpp
+@@ -22,6 +22,7 @@
+ #include "endstone/core/util/socket_address.h"
+ #include "endstone/event/player/player_kick_event.h"
+ #include "endstone/event/player/player_login_event.h"
++#include "endstone/event/player/player_pre_login_event.h"
+ #include "endstone/runtime/hook.h"
+ 
+ void ServerNetworkHandler::disconnectClientWithMessage(const NetworkIdentifier &id, const SubClientId sub_id,
+@@ -132,10 +133,32 @@ std::optional<PlayerAuthenticationInfo> ServerNetworkHandler::_validateLoginPack
+         return auth_info;
+     }
+ 
+-    const auto &info = *auth_info;
+-    const auto &name = info.xuid.empty() ? packet.payload.connection_request->getThirdPartyName() : info.xbox_live_name;
+-    const auto uuid = endstone::core::EndstoneUUID::fromMinecraft(info.authenticated_uuid);
+-    const auto &xuid = info.xuid;
++    auto &info = *auth_info;
++    const auto initial_name =
++        info.xuid.empty() ? packet.payload.connection_request->getThirdPartyName() : info.xbox_live_name;
++    endstone::PlayerPreLoginEvent pre_login{initial_name, info.xuid, info.authenticated_uuid.asString(), address};
++    server.getPluginManager().callEvent(pre_login);
++    if (pre_login.isCancelled()) {
++        network_handler->disconnect(source, SubClientId::PrimaryClient, pre_login.getKickMessage());
++        return std::nullopt;
++    }
++
++    if (!pre_login.getUniqueId().empty()) {
++        if (!mce::UUID::canParse(pre_login.getUniqueId())) {
++            network_handler->disconnect(source, SubClientId::PrimaryClient, "Backend supplied an invalid player UUID.");
++            return std::nullopt;
++        }
++        info.authenticated_uuid = mce::UUID::fromString(pre_login.getUniqueId());
++    }
++    info.xuid = pre_login.getXuid();
++    if (!info.xuid.empty()) {
++        info.xbox_live_name = pre_login.getName();
++        info.best_display_name = pre_login.getName();
++    }
++
++    const auto &name = info.xuid.empty() ? initial_name : info.xbox_live_name;
++    const auto uuid = endstone::core::EndstoneUUID::fromMinecraft(info.authenticated_uuid);
++    const auto &xuid = info.xuid;
+     if (server.getBanList().isBanned(name, uuid, xuid)) {
+         const gsl::not_null ban_entry = server.getBanList().getBanEntry(name, uuid, xuid);
+         if (const auto reason = ban_entry->getReason(); !reason.empty()) {

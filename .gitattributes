@@ -1,0 +1,20 @@
+# Normalise line endings so a Windows and a Linux contributor do not produce whole-file diffs
+# against each other. Everything git detects as text is stored LF and checked out natively.
+* text=auto
+
+# Shell scripts must stay LF even on Windows checkouts: CRLF makes them unrunnable on Linux.
+*.sh text eol=lf
+
+# Batch and PowerShell files are the mirror image.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# The Endstone patch must keep its exact bytes, or `git apply` stops matching.
+*.patch -text
+
+# Never touch these.
+*.whl binary
+*.zip binary
+*.gz binary
+*.png binary
