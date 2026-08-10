@@ -82,6 +82,14 @@ modified/           EndlinkGuard for the patched runtime
 modified-endstone/  The Endstone source patch, build tooling and prebuilt runtime wheel
 ```
 
+## Related
+
+| | |
+| --- | --- |
+| [Endlink](https://github.com/luibara2/endlink) | **Required.** The proxy this verifies joins against — EndlinkGuard does nothing without it |
+| [ViaEndlink](https://github.com/luibara2/viaendlink) | **Beta.** Optional Endlink addon for Minecraft: Java Edition players. Nothing to install here — verified Java joins arrive through the proxy like any other |
+| [Endstone](https://github.com/EndstoneMC/endstone) | The server this is a plugin for: plugin-capable Bedrock Dedicated Server |
+
 ## Licence
 
 EndlinkGuard is licensed under the **Apache License 2.0** — see `LICENSE`. This matches
