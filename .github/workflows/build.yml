@@ -42,7 +42,7 @@ jobs:
         run: python -m build --wheel
 
       # Both wheels are named endstone_endlinkguard-<version>, so they can share one artifact
-      # without colliding: stock is 0.1.6 and modified is 1.0.4.
+      # without colliding: stock is 0.1.7 and modified is 1.0.4.
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
