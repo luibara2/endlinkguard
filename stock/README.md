@@ -1,6 +1,6 @@
 # Backend verifier for stock Endstone
 
-This is the legacy `0.1.7` verifier for an **unmodified/official Endstone**
+This is the legacy `0.1.6` verifier for an **unmodified/official Endstone**
 runtime. It verifies that backend joins came through endstone-proxy, stores the
 proxy-returned identity, exposes `get_real_xuid()`, and preserves the legacy
 proxy-backed operator store.

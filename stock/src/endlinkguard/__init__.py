@@ -142,7 +142,7 @@ def _install_address_patch(logger) -> None:
 
 class EndlinkGuardPlugin(Plugin):
     name = "endlinkguard"
-    version = "0.1.7"
+    version = "0.1.6"
     api_version = "0.10"
     description = "Rejects direct backend joins unless endstone-proxy verifies the login."
 

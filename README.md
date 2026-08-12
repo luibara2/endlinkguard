@@ -70,26 +70,9 @@ cd stock      && python -m build --wheel
 cd modified   && python -m build --wheel
 ```
 
-The wheel lands in `dist/`. Install it on the backend and **remove any older verifier wheel first**,
-both from the Python environment and from the server's `plugins/` directory.
-
-The distribution name has changed twice — from `endstone-backend-verifier`, and as of stock `0.1.7`
-/ modified `1.0.4` from `endlinkguard` to `endstone-endlinkguard`. pip treats each as a separate
-package, so it will not replace the previous one: without the uninstall you end up with two
-distributions both registering an `endlinkguard` entry point, and Endstone logs `Invalid name` for
-the stale one on every startup.
-
-```
-pip uninstall endlinkguard endstone-backend-verifier
-```
-
-The last rename was not cosmetic. Endstone's plugin loader requires the distribution name to be
-`endstone-` plus the entry point name and refuses to load anything else, so builds before stock
-`0.1.7` / modified `1.0.4` do not load at all on Endstone `0.11.7`.
-
-Only the **stock** wheel is attached to [releases](https://github.com/luibara2/endlinkguard/releases).
-Build `modified/` yourself with the command above — it is only usable alongside a patched runtime you
-have to compile anyway.
+The wheel lands in `dist/`. Install it on the backend and remove any older verifier wheel first — the
+package name changed from `endstone-backend-verifier`, so pip will not replace it and Endstone would
+otherwise try to load both plugins.
 
 ## Repository layout
 
