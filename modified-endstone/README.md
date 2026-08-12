@@ -104,8 +104,10 @@ It copies the modes across and refuses to finish unless `crashpad_handler` ends 
 ## Using it
 
 1. Install your patched wheel into the backend's Python environment, replacing the official Endstone.
-2. Install **`endlinkguard-1.0.3-py3-none-any.whl`** (the `modified/` build) on that backend — not the
-   stock one. Never both.
+2. Install **`endstone_endlinkguard-1.0.4-py3-none-any.whl`** (the `modified/` build) on that backend
+   — not the stock one. Never both. If a pre-1.0.4 build is present, `pip uninstall endlinkguard`
+   first: the old distribution name keeps its own entry point registered, and the loader logs
+   "Invalid name" for it on every startup.
 3. Configure `shared_secret` to match the proxy, as in the main README.
 
 A backend running the patched runtime with the stock plugin simply loses the early-injection benefit.
