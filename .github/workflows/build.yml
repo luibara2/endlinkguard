@@ -59,3 +59,47 @@ jobs:
           test -f modified-endstone/src/patches/endstone-pre-login-identity.patch
           grep -q "player_pre_login_event.h" modified-endstone/src/patches/endstone-pre-login-identity.patch
           echo "Endstone patch present and references the expected new header."
+
+  # The Geyser build is a Java extension rather than a wheel, so it gets its own job. It compiles
+  # against whichever Geyser is current rather than a pinned one: the extension makes one call into
+  # Geyser's internals to set a player's forwarded address, and this is what says so early when that
+  # call or the extension API moves under it.
+  geyser:
+    name: Build the Geyser extension
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Download the current Geyser
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $build = Invoke-RestMethod 'https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest'
+          Write-Host "Geyser $($build.version) build $($build.build)"
+          Invoke-WebRequest `
+            'https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/standalone' `
+            -OutFile Geyser-Standalone.jar -UseBasicParsing
+          $actual = (Get-FileHash Geyser-Standalone.jar -Algorithm SHA256).Hash
+          if ($actual -ne ([string]$build.downloads.standalone.sha256).ToUpper()) {
+            throw "Geyser download checksum mismatch"
+          }
+
+      # Runs the same script an operator runs, on the platform it is written for, so a break in the
+      # build script itself fails here rather than on somebody's server.
+      - name: Build the extension
+        shell: pwsh
+        run: ./geyser/build.ps1 -GeyserJar Geyser-Standalone.jar
+
+      - name: Upload the extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: endlinkguard-geyser
+          path: geyser/dist/EndlinkGuard.jar
+          if-no-files-found: error

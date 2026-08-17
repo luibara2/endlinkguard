@@ -26,14 +26,20 @@ server side.
 
 ## Which build to install
 
-**Never install both on one backend.**
+**Never install more than one on a backend.**
 
 | Backend | Use | What you get |
 | --- | --- | --- |
 | Official, unmodified Endstone | `stock/` | Direct joins rejected, proxy joins verified, proxy-backed XUID available to Python plugins |
 | Patched Endstone `0.11.7.post2` | `modified/` | All of the above, **plus** the verified XUID and UUID injected before BDS loads player data |
+| A **Geyser** instance in front of a Java server | `geyser/` | Direct joins rejected, proxy joins verified, and the player's real IP carried to the Java server |
 
-The difference matters for player data. Stock Endstone picks the native player record before
+`geyser/` is the odd one out: a Java extension rather than a Python wheel, and installed into a
+Geyser instance rather than an Endstone backend. It is what lets an Endlink network include a
+**Minecraft: Java** backend — Bedrock players join the proxy as usual, Geyser translates their
+session, and the Java server sees them through Floodgate. See [geyser/README.md](geyser/README.md).
+
+The first two differ over player data. Stock Endstone picks the native player record before
 `PlayerLoginEvent`, which is the first point a plugin can act, so the stock build cannot preserve
 XUID-owned inventory by itself. The patched runtime exposes `PlayerPreLoginEvent`, which is early
 enough.
@@ -63,7 +69,7 @@ rejected and the server logs say so plainly rather than failing open.
 
 ## Building
 
-Each project is a standard hatchling build:
+The two Endstone builds are standard hatchling builds:
 
 ```
 cd stock      && python -m build --wheel
@@ -74,12 +80,21 @@ The wheel lands in `dist/`. Install it on the backend and remove any older verif
 package name changed from `endstone-backend-verifier`, so pip will not replace it and Endstone would
 otherwise try to load both plugins.
 
+The Geyser build is a Java extension. It needs a JDK 21+ and nothing from the network — every Geyser
+jar already carries the whole extension API, so it compiles straight against the one it will run on:
+
+```powershell
+cd geyser
+.\build.ps1 -GeyserJar <path-to-Geyser.jar> -DeployTo <server>\extensions
+```
+
 ## Repository layout
 
 ```
 stock/              EndlinkGuard for unmodified Endstone
 modified/           EndlinkGuard for the patched runtime
 modified-endstone/  The Endstone source patch, build tooling and prebuilt runtime wheel
+geyser/             EndlinkGuard for a Geyser instance fronting a Java server
 ```
 
 ## Related
