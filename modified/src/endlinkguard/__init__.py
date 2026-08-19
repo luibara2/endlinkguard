@@ -16,9 +16,15 @@ from pathlib import Path
 
 from endstone import Player
 from endstone.event import (
+    BlockBreakEvent,
+    BlockPlaceEvent,
     EventPriority,
+    PlayerGameModeChangeEvent,
+    PlayerInteractActorEvent,
+    PlayerInteractEvent,
     PlayerJoinEvent,
     PlayerLoginEvent,
+    PlayerMoveEvent,
     PlayerPreLoginEvent,
     PlayerQuitEvent,
     event_handler,
@@ -101,7 +107,7 @@ class EndlinkGuardPlugin(Plugin):
     # Keep the original plugin name/data folder so proxy-identities.json and
     # proxy-permissions.json from verifier 0.1.x remain available.
     name = "endlinkguard"
-    version = "1.0.4"
+    version = "1.1.0"
     api_version = "0.10"
     description = "Restores proxy player XUID before BDS loads native player data."
 
@@ -118,12 +124,20 @@ class EndlinkGuardPlugin(Plugin):
         self.register_events(self)
         if self.config.get("shared_secret") == "change-this-shared-secret":
             self.logger.warning("shared_secret is still the default development value.")
+        if self._debug_enabled():
+            self.logger.info("Backend interaction debug logging enabled.")
         self.logger.info(
             "Pre-load proxy identity forwarding enabled; BDS native player data will use the verified XUID."
         )
         if self not in _REAL_ADDRESS_PROVIDERS:
             _REAL_ADDRESS_PROVIDERS.append(self)
-        _install_address_patch(self.logger)
+        if self._apply_real_ip():
+            _install_address_patch(self.logger)
+        else:
+            self.logger.warning(
+                "apply_real_ip is off; Player.address will report this proxy's address for every "
+                "player, so anything that bans or rate-limits by IP will act on all of them at once."
+            )
 
     def on_disable(self) -> None:
         try:
@@ -193,7 +207,10 @@ class EndlinkGuardPlugin(Plugin):
         # XUID but creates a second UUID identity for scoreboard/Script API data.
         backend_uuid = str(event.unique_id or "")
         event.xuid = identity.xuid
-        self._approved[_name_key(identity.name)] = (identity, time.monotonic() + 15.0)
+        self._approved[_name_key(identity.name)] = (
+            identity,
+            time.monotonic() + self._approval_timeout(),
+        )
         self.logger.info(
             f"Restored proxy-verified XUID before player-data load: name={identity.name} "
             f"xuid={identity.xuid} preserved_backend_uuid={backend_uuid} "
@@ -214,6 +231,11 @@ class EndlinkGuardPlugin(Plugin):
         identity, expires_at = approval
         if expires_at < time.monotonic():
             self._reject(event, "Proxy verification expired.")
+            self.logger.warning(
+                f"Rejected {event.player.name}: the proxy-verified approval from pre-login expired "
+                f"after {self._approval_timeout():.0f}s before BDS reached the login event. "
+                "Raise approval_timeout_seconds if joins on this backend legitimately take longer."
+            )
             return
 
         actual_xuid = str(event.player.xuid or "")
@@ -262,6 +284,105 @@ class EndlinkGuardPlugin(Plugin):
             self.logger.warning(
                 f"Failed to restore operator status for {event.player.name}: {exc}"
             )
+
+    # ------------------------------------------------------------------ debug
+    # Identical in the stock build, and gated by the same two config keys, so a report from either
+    # backend reads the same. Off by default: these fire on every interaction and every movement.
+
+    @event_handler
+    def on_game_mode_change(self, event: PlayerGameModeChangeEvent) -> None:
+        if self._debug_enabled():
+            self.logger.info(
+                f"debug gamemode name={event.player.name} "
+                f"new={event.new_game_mode} cancelled={event.cancelled}"
+            )
+
+    @event_handler
+    def on_player_interact(self, event: PlayerInteractEvent) -> None:
+        if self._debug_enabled():
+            self.logger.info(
+                f"debug interact name={event.player.name} action={event.action} "
+                f"has_block={event.has_block} block={_safe_attr(event, 'block')} "
+                f"face={_safe_attr(event, 'block_face')} has_item={event.has_item} "
+                f"item={_safe_attr(event, 'item')} cancelled={event.cancelled}"
+            )
+
+    @event_handler
+    def on_player_interact_actor(self, event: PlayerInteractActorEvent) -> None:
+        if self._debug_enabled():
+            self.logger.info(
+                f"debug interact_actor name={event.player.name} "
+                f"actor={_safe_attr(event, 'actor')} cancelled={event.cancelled}"
+            )
+
+    @event_handler
+    def on_block_break(self, event: BlockBreakEvent) -> None:
+        if self._debug_enabled():
+            self.logger.info(
+                f"debug block_break name={event.player.name} block={event.block} "
+                f"game_mode={_safe_attr(event.player, 'game_mode')} "
+                f"cancelled={event.cancelled}"
+            )
+
+    @event_handler
+    def on_block_place(self, event: BlockPlaceEvent) -> None:
+        if self._debug_enabled():
+            self.logger.info(
+                f"debug block_place name={event.player.name} block={event.block} "
+                f"against={_safe_attr(event, 'block_against')} "
+                f"game_mode={_safe_attr(event.player, 'game_mode')} "
+                f"cancelled={event.cancelled}"
+            )
+
+    @event_handler
+    def on_player_move(self, event: PlayerMoveEvent) -> None:
+        if not self._debug_enabled() or not self.config.get("debug_movement", False):
+            return
+        self.logger.info(
+            f"debug move name={event.player.name} from={event.from_location} "
+            f"to={event.to_location} cancelled={event.cancelled}"
+        )
+
+    def _apply_real_ip(self) -> bool:
+        """Whether Player.address should report the player's real endpoint.
+
+        Same key, same default and same meaning in all three builds. Turning it off leaves every
+        proxied player sharing the proxy's address, so one IP ban downstream hits the whole network -
+        it exists to isolate a suspected fault in the address handling, not as a normal setting. The
+        get_real_address()/get_real_ip() API keeps working either way; only the patch is skipped.
+        """
+        return bool(self.config.get("apply_real_ip", True))
+
+    def _debug_enabled(self) -> bool:
+        return bool(self.config.get("debug_interactions", False))
+
+    def _approval_timeout(self) -> float:
+        """Seconds a pre-login approval stays usable before its player must verify again.
+
+        BDS fires PlayerPreLoginEvent when it parses the login and PlayerLoginEvent only once the
+        client is ready to enter the world, and everything in between counts against this: the
+        client's resource pack download most of all. Endlink keeps the backend connection open and
+        waiting through that download, so a player pulling several megabytes of packs over a slow
+        link is inside this window the whole time.
+
+        This was a hard-coded 15 seconds, which a pack download beats routinely and a slow player
+        data load beats occasionally. Both showed up as "Proxy verification expired." — the player
+        read it as a random kick, because from their side it was one.
+
+        The window is not what keeps an unverified player out. on_player_pre_login runs first for
+        every login, rejects anything that is not from an allowed proxy address, and re-verifies
+        through the proxy before writing an approval at all; a cancelled pre-login means no login
+        event follows. This bound only stops abandoned approvals from lingering, so it can afford to
+        be generous.
+        """
+        try:
+            timeout = float(self.config.get("approval_timeout_seconds", 600.0))
+        except (TypeError, ValueError):
+            self.logger.warning(
+                "approval_timeout_seconds is not a number; falling back to 600."
+            )
+            return 600.0
+        return timeout if timeout > 0 else 600.0
 
     def _prune_approvals(self) -> None:
         now = time.monotonic()
@@ -317,6 +438,13 @@ class EndlinkGuardPlugin(Plugin):
         except Exception:
             pass
         event.cancel()
+
+
+def _safe_attr(obj: object, attr: str):
+    try:
+        return getattr(obj, attr)
+    except Exception as exc:
+        return f"<error {exc}>"
 
 
 def _name_key(name: str) -> str:

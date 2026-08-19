@@ -1,4 +1,11 @@
-"""Proxy verification protocol shared by the pre-login Endstone plugin."""
+"""Proxy verification protocol, shared verbatim by every EndlinkGuard build.
+
+This file is kept byte-identical between ``stock/`` and ``modified/``, and the Geyser build
+reimplements the same rules in Java. The canonical payload and the response checks are the protocol
+contract with Endlink, so a change here is a change to all three builds: edit one copy, then copy it
+over the other and mirror it in ``EndlinkGuardExtension.java``. ``diff`` between the two Python
+copies returning nothing is the check that they have not drifted.
+"""
 
 from __future__ import annotations
 

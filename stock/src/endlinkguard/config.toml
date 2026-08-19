@@ -1,17 +1,36 @@
+# EndlinkGuard - stock Endstone build
+#
+# The keys above the divider are common to all three EndlinkGuard builds (stock, modified, geyser)
+# and mean the same thing in each. Anything below it is specific to this build.
+
 # The backend must only accept game traffic from these proxy addresses.
+# Add the proxy's private/VPN address when it runs on another machine.
 allowed_proxy_ips = ["127.0.0.1", "::1"]
 
 # The proxy's backendVerification endpoint.
 proxy_verify_url = "http://127.0.0.1:19135/verify"
 
 # Must exactly match backendVerification.sharedSecret in proxy config.properties.
+# A mismatch rejects every join, and says so in the log rather than failing open.
 shared_secret = "change-this-shared-secret"
 
+# How long to wait for the verifier to answer. It is on loopback in the usual layout, so this only
+# matters when the proxy is wedged or reached across a network.
 request_timeout_seconds = 2.0
+
+# Replace the address Endstone reports for a player with their real one, as the proxy saw it.
+# Turning this off makes every proxied player share the proxy's address, so a single IP ban or rate
+# limit downstream hits all of them. Only disable to isolate a suspected fault in address handling.
+apply_real_ip = true
+
+# Log every interaction the plugin sees. Off by default: these fire constantly on a busy server.
+debug_interactions = false
+
+# Adds movement to the above. Far noisier again, and needs debug_interactions to be on as well.
+debug_movement = false
+
+# ---------------------------------------------------------------------------------------------
+# Specific to the stock Endstone build build.
 
 # Persist operator state independently of BDS when its native XUID is blank.
 proxy_permission_store_enabled = true
-
-# Optional verbose diagnostics retained from the legacy plugin.
-debug_interactions = false
-debug_movement = false

@@ -1,12 +1,6 @@
-import hashlib
-import hmac
 import json
 import re
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
-import uuid
 from ipaddress import ip_address
 from pathlib import Path
 
@@ -27,6 +21,12 @@ from endstone.event import (
     event_handler,
 )
 from endstone.plugin import Plugin
+
+from endlinkguard.verification import (
+    VerificationError,
+    VerifiedIdentity,
+    verify_pending_join,
+)
 
 
 # Live instances that can supply a verified XUID for a player name. A registry
@@ -142,7 +142,7 @@ def _install_address_patch(logger) -> None:
 
 class EndlinkGuardPlugin(Plugin):
     name = "endlinkguard"
-    version = "0.1.7"
+    version = "1.1.0"
     api_version = "0.10"
     description = "Rejects direct backend joins unless endstone-proxy verifies the login."
 
@@ -161,12 +161,18 @@ class EndlinkGuardPlugin(Plugin):
         self.logger.info("Backend join verification enabled.")
         if self._permission_store_enabled():
             self.logger.info("Proxy-backed permission persistence enabled.")
-        if self.config.get("debug_interactions", False):
+        if self._debug_enabled():
             self.logger.info("Backend interaction debug logging enabled.")
         if self not in _VERIFIED_XUID_PROVIDERS:
             _VERIFIED_XUID_PROVIDERS.append(self)
         _install_xuid_patch(self.logger)
-        _install_address_patch(self.logger)
+        if self._apply_real_ip():
+            _install_address_patch(self.logger)
+        else:
+            self.logger.warning(
+                "apply_real_ip is off; Player.address will report this proxy's address for every "
+                "player, so anything that bans or rate-limits by IP will act on all of them at once."
+            )
 
     def on_disable(self) -> None:
         try:
@@ -213,40 +219,29 @@ class EndlinkGuardPlugin(Plugin):
             )
             return
 
-        request = {
-            "xuid": str(player.xuid),
-            "uuid": str(player.unique_id),
-            "name": str(player.name),
-            "address": source_ip,
-            "timestamp": str(int(time.time() * 1000)),
-            "nonce": uuid.uuid4().hex,
-        }
-        request["signature"] = _signature(self.config["shared_secret"], request)
-
-        verify_url = self.config["proxy_verify_url"] + "?" + urllib.parse.urlencode(request)
         try:
-            with urllib.request.urlopen(
-                verify_url,
+            identity = verify_pending_join(
+                str(self.config["proxy_verify_url"]),
+                str(self.config["shared_secret"]),
+                name=str(player.name),
+                address=source_ip,
+                xuid=str(player.xuid or ""),
+                unique_id=str(player.unique_id or ""),
                 timeout=float(self.config.get("request_timeout_seconds", 2.0)),
-            ) as response:
-                if response.status == 200:
-                    body = response.read().decode("utf-8", "replace")
-                    self._remember_verified_player(player.name, body, request)
-                    return
-                body = response.read().decode("utf-8", "replace")
-        except urllib.error.HTTPError as exc:
-            try:
-                body = f"HTTP {exc.code}: {exc.read().decode('utf-8', 'replace')}"
-            except Exception:
-                body = str(exc)
-        except Exception as exc:
-            body = str(exc)
+            )
+        except VerificationError as exc:
+            # Anything the shared module refuses is refused here too, including a 200 whose body is
+            # not an identity this plugin can vouch for. That response is not authenticated - only
+            # the request is - and the address it carries becomes Player.address, which IP logging
+            # and bans downstream read as fact.
+            self._reject(event, "Proxy verification failed.")
+            self.logger.warning(
+                f"Rejected unverified backend join for {player.name} "
+                f"(xuid={player.xuid!r} uuid={player.unique_id!r}): {exc}"
+            )
+            return
 
-        self._reject(event, "Proxy verification failed.")
-        self.logger.warning(
-            f"Rejected unverified backend join for {player.name} "
-            f"(xuid={player.xuid!r} uuid={player.unique_id!r}): {body}"
-        )
+        self._remember_verified_player(identity)
 
     @event_handler
     def on_player_join(self, event: PlayerJoinEvent) -> None:
@@ -333,39 +328,40 @@ class EndlinkGuardPlugin(Plugin):
             f"to={event.to_location} cancelled={event.cancelled}"
         )
 
+    def _apply_real_ip(self) -> bool:
+        """Whether Player.address should report the player's real endpoint.
+
+        Same key, same default and same meaning in all three builds. Turning it off leaves every
+        proxied player sharing the proxy's address, so one IP ban downstream hits the whole network -
+        it exists to isolate a suspected fault in the address handling, not as a normal setting. The
+        get_real_address()/get_real_ip() API keeps working either way; only the patch is skipped.
+        """
+        return bool(self.config.get("apply_real_ip", True))
+
     def _debug_enabled(self) -> bool:
         return bool(self.config.get("debug_interactions", False))
 
     def _permission_store_enabled(self) -> bool:
         return bool(self.config.get("proxy_permission_store_enabled", True))
 
-    def _remember_verified_player(self, name, response_body, request) -> None:
+    def _remember_verified_player(self, verified: VerifiedIdentity) -> None:
+        """Records an identity the shared module has already validated.
+
+        Every field here has been through verify_pending_join: the name matches the one this plugin
+        asked about, the XUID is digits, the UUID parses, and the endpoint is a real address in a
+        legal port range. There is nothing left to salvage or second-guess, so unlike the previous
+        version this cannot half-accept a malformed response and carry on.
+        """
+        name = verified.name
         identity = {
             "name": str(name),
-            "xuid": request.get("xuid", ""),
-            "uuid": request.get("uuid", ""),
-            "backend": "",
-            "real_ip": "",
-            "real_port": 0,
+            "xuid": verified.xuid,
+            "uuid": verified.unique_id,
+            "backend": verified.backend,
+            "real_ip": verified.real_ip,
+            "real_port": verified.real_port,
             "verified_at": str(int(time.time() * 1000)),
         }
-        try:
-            payload = json.loads(response_body) if response_body.strip().startswith("{") else {}
-            if isinstance(payload, dict):
-                identity["xuid"] = str(payload.get("xuid") or identity["xuid"])
-                identity["uuid"] = str(payload.get("uuid") or identity["uuid"])
-                identity["backend"] = str(payload.get("backend") or "")
-                real_ip = str(payload.get("real_ip") or "").strip()
-                if real_ip:
-                    identity["real_ip"] = str(ip_address(real_ip))
-                real_port = int(payload.get("real_port") or 0)
-                if not 0 <= real_port <= 65535:
-                    raise ValueError("real_port is outside 0..65535")
-                identity["real_port"] = real_port
-        except Exception as exc:
-            self.logger.warning(
-                f"Proxy verification response for {name} was not JSON: {exc}"
-            )
 
         key = _name_key(name)
         self._verified_players[key] = identity
@@ -514,23 +510,6 @@ class EndlinkGuardPlugin(Plugin):
         except Exception:
             pass
         event.cancel()
-
-
-def _signature(secret: str, request: dict) -> str:
-    payload = "\n".join(
-        [
-            "v1",
-            request["xuid"],
-            request["uuid"],
-            request["name"],
-            request["address"],
-            request["timestamp"],
-            request["nonce"],
-        ]
-    )
-    return hmac.new(
-        secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
-    ).hexdigest()
 
 
 def _name_key(name: str) -> str:

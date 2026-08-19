@@ -16,10 +16,21 @@ def _install_endstone_stubs() -> None:
 
     events = types.ModuleType("endstone.event")
     events.EventPriority = types.SimpleNamespace(LOWEST=0, MONITOR=1)
-    events.PlayerJoinEvent = type("PlayerJoinEvent", (), {})
-    events.PlayerLoginEvent = type("PlayerLoginEvent", (), {})
-    events.PlayerPreLoginEvent = type("PlayerPreLoginEvent", (), {})
-    events.PlayerQuitEvent = type("PlayerQuitEvent", (), {})
+    # Kept in step with the stock build's harness: both plugins now subscribe to the same debug
+    # events, so both stub lists have to name them.
+    for name in (
+        "BlockBreakEvent",
+        "BlockPlaceEvent",
+        "PlayerGameModeChangeEvent",
+        "PlayerInteractActorEvent",
+        "PlayerInteractEvent",
+        "PlayerJoinEvent",
+        "PlayerLoginEvent",
+        "PlayerMoveEvent",
+        "PlayerPreLoginEvent",
+        "PlayerQuitEvent",
+    ):
+        setattr(events, name, type(name, (), {}))
     def event_handler(function=None, **_kwargs):
         if function is not None:
             return function
@@ -136,3 +147,69 @@ class PluginIdentityTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ApprovalWindowTest(PluginIdentityTest):
+    """The window between pre-login and login has to cover a resource pack download.
+
+    BDS fires pre-login on the parsed login and login only once the client is ready to enter the
+    world; the proxy holds the backend connection open across the client's pack download in between.
+    A 15-second window kicked those players with "Proxy verification expired.".
+    """
+
+    def _approve_then_login(self, elapsed):
+        pre_login = _PreLoginEvent()
+        with patch.object(plugin_module, "verify_pending_join", return_value=self.identity):
+            self.plugin.on_player_pre_login(pre_login)
+
+        _, expires_at = self.plugin._approved["luibara2"]
+        login = _LoginEvent(self.identity.xuid, "86fa17db-ca45-46b0-a5ee-2f3e068ff4a4")
+        with patch.object(
+            plugin_module.time, "monotonic", return_value=expires_at - self.plugin._approval_timeout() + elapsed
+        ):
+            self.plugin.on_player_login(login)
+        return login
+
+    def test_default_window_survives_a_slow_resource_pack_download(self):
+        self.assertEqual(self.plugin._approval_timeout(), 600.0)
+        self.assertFalse(self._approve_then_login(120.0).cancelled)
+
+    def test_window_is_configurable(self):
+        self.plugin.config["approval_timeout_seconds"] = 45.0
+        self.assertEqual(self.plugin._approval_timeout(), 45.0)
+        self.assertTrue(self._approve_then_login(90.0).cancelled)
+
+    def test_unusable_window_value_falls_back_to_the_default(self):
+        for value in ("not-a-number", 0, -1):
+            with self.subTest(value=value):
+                self.plugin.config["approval_timeout_seconds"] = value
+                self.assertEqual(self.plugin._approval_timeout(), 600.0)
+
+    def test_approval_still_expires_eventually(self):
+        self.assertTrue(self._approve_then_login(601.0).cancelled)
+
+
+class SharedConfigTest(PluginIdentityTest):
+    """Keys that must mean the same thing in every build."""
+
+    def test_shared_config_keys_have_the_documented_defaults(self):
+        self.assertTrue(self.plugin._apply_real_ip())
+        self.assertFalse(self.plugin._debug_enabled())
+        self.plugin.config["apply_real_ip"] = False
+        self.assertFalse(self.plugin._apply_real_ip())
+        self.plugin.config["debug_interactions"] = True
+        self.assertTrue(self.plugin._debug_enabled())
+
+
+class VerificationCopiesTest(unittest.TestCase):
+    """The two Python builds must ship the same protocol implementation, byte for byte."""
+
+    def test_stock_and_modified_verification_modules_are_identical(self):
+        root = Path(__file__).parents[2]
+        stock = (root / "stock" / "src" / "endlinkguard" / "verification.py").read_bytes()
+        modified = (root / "modified" / "src" / "endlinkguard" / "verification.py").read_bytes()
+        self.assertEqual(
+            stock,
+            modified,
+            "stock and modified verification.py have drifted; copy one over the other",
+        )

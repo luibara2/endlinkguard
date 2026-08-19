@@ -11,10 +11,12 @@ import javax.crypto.spec.SecretKeySpec;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.URL;
 import java.net.URLEncoder;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -54,12 +56,17 @@ public final class EndlinkGuardExtension implements Extension {
     private static final Pattern REAL_IP = Pattern.compile("\"real_ip\"\\s*:\\s*\"([^\"]*)\"");
     private static final Pattern REAL_PORT = Pattern.compile("\"real_port\"\\s*:\\s*(\\d+)");
     private static final Pattern STATUS_OK = Pattern.compile("\"status\"\\s*:\\s*\"ok\"");
+    private static final Pattern RESPONSE_NAME = Pattern.compile("\"name\"\\s*:\\s*\"([^\"]*)\"");
+    private static final Pattern RESPONSE_XUID = Pattern.compile("\"xuid\"\\s*:\\s*\"([^\"]*)\"");
+    private static final Pattern RESPONSE_UUID = Pattern.compile("\"uuid\"\\s*:\\s*\"([^\"]*)\"");
+    private static final Pattern DIGITS = Pattern.compile("[0-9]+");
 
     private Set<String> allowedProxyIps = Set.of();
     private String verifyUrl = "";
     private byte[] sharedSecret = new byte[0];
     private int timeoutMillis = 2000;
     private boolean applyRealIp = true;
+    private boolean debugInteractions = false;
 
     @Subscribe
     public void onPreInitialize(GeyserPreInitializeEvent event) {
@@ -109,6 +116,14 @@ public final class EndlinkGuardExtension implements Extension {
             return;
         }
 
+        if (debugInteractions) {
+            // Geyser exposes no interaction or movement events to extensions, so debug_interactions
+            // covers what this build actually decides: who was let in and what address they got.
+            logger().info("debug join name=" + name + " source=" + sourceIp
+                    + " real=" + (result.realIp().isEmpty() ? "<none>" : result.realIp() + ":" + result.realPort())
+                    + " apply_real_ip=" + applyRealIp);
+        }
+
         if (applyRealIp && !result.realIp().isEmpty()) {
             applyRealIp(session, result, name);
         }
@@ -140,6 +155,11 @@ public final class EndlinkGuardExtension implements Extension {
     private void reject(SessionLoginEvent event, String name, String detail) {
         logger().warning("Rejected unverified join for " + name + ": " + detail);
         event.setCancelled(true, "Proxy verification failed.");
+    }
+
+    /** Same key, same default and same meaning as the Endstone builds' debug_interactions. */
+    public boolean debugInteractions() {
+        return debugInteractions;
     }
 
     private static GeyserSession session(SessionLoginEvent event) {
@@ -178,12 +198,77 @@ public final class EndlinkGuardExtension implements Extension {
         try {
             int status = http.getResponseCode();
             String body = read(status < 400 ? http.getInputStream() : http.getErrorStream());
-            if (status == 200 && STATUS_OK.matcher(body).find()) {
-                return new VerifyResult(true, group(REAL_IP, body, ""), port(body), "");
+            if (status != 200 || !STATUS_OK.matcher(body).find()) {
+                return new VerifyResult(false, "", 0, "HTTP " + status + ": " + body.trim());
             }
-            return new VerifyResult(false, "", 0, "HTTP " + status + ": " + body.trim());
+            return validate(body, name);
         } finally {
             http.disconnect();
+        }
+    }
+
+    /**
+     * Applies the same response checks as the Python builds' {@code verify_pending_join}.
+     *
+     * <p>A 200 means the proxy accepted the join, but the response is not authenticated - only the
+     * request is - and the address it carries is about to replace the one the Java server sees. So
+     * the identity is checked rather than trusted: the name must be the player this extension asked
+     * about, the XUID must be digits, the UUID must parse, and the endpoint must be a real address
+     * in a legal port range. Anything else is refused, exactly as the Endstone builds refuse it.</p>
+     */
+    private VerifyResult validate(String body, String requestedName) {
+        String responseName = group(RESPONSE_NAME, body, "");
+        if (!responseName.equalsIgnoreCase(requestedName)) {
+            return new VerifyResult(false, "", 0, "proxy returned a different player name: " + responseName);
+        }
+
+        String xuid = group(RESPONSE_XUID, body, "");
+        if (xuid.isEmpty() || !DIGITS.matcher(xuid).matches()) {
+            return new VerifyResult(false, "", 0, "proxy returned an invalid XUID");
+        }
+
+        try {
+            UUID.fromString(group(RESPONSE_UUID, body, ""));
+        } catch (IllegalArgumentException exception) {
+            return new VerifyResult(false, "", 0, "proxy returned an invalid UUID");
+        }
+
+        String realIp = group(REAL_IP, body, "").trim();
+        if (!realIp.isEmpty() && !isAddressLiteral(realIp)) {
+            return new VerifyResult(false, "", 0, "proxy returned an invalid real client IP: " + realIp);
+        }
+
+        int realPort = port(body);
+        if (realPort < 0 || realPort > 65535) {
+            return new VerifyResult(false, "", 0, "proxy returned an invalid real client port: " + realPort);
+        }
+
+        return new VerifyResult(true, realIp, realPort, "");
+    }
+
+    /**
+     * Parses an address literal without ever resolving a name.
+     *
+     * <p>Matches what {@code ipaddress.ip_address} accepts in the Python builds: literals only. The
+     * shape test comes first because {@code InetAddress.getByName} would happily take a hostname and
+     * go to DNS for it - a blocking network call on the login thread, driven by a value that just
+     * arrived over the wire. Once the string is known to be all digits and dots, or to contain a
+     * colon, {@code getByName} parses it in-process and never queries a resolver.</p>
+     *
+     * <p>{@code InetAddress.ofLiteral} would say this in one line, but it is Java 22 and this
+     * extension builds on 21.</p>
+     */
+    private static boolean isAddressLiteral(String value) {
+        boolean looksNumeric = value.indexOf(':') >= 0
+                || value.chars().allMatch(c -> (c >= '0' && c <= '9') || c == '.');
+        if (!looksNumeric) {
+            return false;
+        }
+        try {
+            InetAddress.getByName(value);
+            return true;
+        } catch (UnknownHostException exception) {
+            return false;
         }
     }
 
@@ -250,13 +335,40 @@ public final class EndlinkGuardExtension implements Extension {
         allowedProxyIps = Set.copyOf(ips);
         verifyUrl = config.getProperty("proxy_verify_url", "http://127.0.0.1:19135/verify").trim();
         sharedSecret = config.getProperty("shared_secret", "").getBytes(StandardCharsets.UTF_8);
-        timeoutMillis = parseInt(config.getProperty("request_timeout_millis"), 2000);
+        timeoutMillis = timeoutMillis(config);
         applyRealIp = !"false".equalsIgnoreCase(config.getProperty("apply_real_ip", "true").trim());
+        debugInteractions = "true".equalsIgnoreCase(config.getProperty("debug_interactions", "false").trim());
 
         if (sharedSecret.length == 0) {
             logger().error("shared_secret is empty. Every join will be rejected until it is set.");
         }
         logger().info("Verifying joins against " + verifyUrl + "; accepting from " + allowedProxyIps + ".");
+    }
+
+    /**
+     * Reads {@code request_timeout_seconds}, the key the Endstone builds use.
+     *
+     * <p>This build used to spell it {@code request_timeout_millis}, so an existing config keeps
+     * working: the old key is honoured when the new one is absent, and says once that it is the old
+     * one. Same setting, same meaning, three builds, one name.</p>
+     */
+    private int timeoutMillis(Properties config) {
+        String seconds = config.getProperty("request_timeout_seconds");
+        if (seconds != null && !seconds.isBlank()) {
+            try {
+                return Math.max(1, (int) Math.round(Double.parseDouble(seconds.trim()) * 1000));
+            } catch (NumberFormatException exception) {
+                logger().warning("request_timeout_seconds is not a number; using 2.0.");
+                return 2000;
+            }
+        }
+        String millis = config.getProperty("request_timeout_millis");
+        if (millis != null && !millis.isBlank()) {
+            logger().warning("request_timeout_millis is the old name for request_timeout_seconds."
+                    + " It still works; rename it when convenient.");
+            return parseInt(millis, 2000);
+        }
+        return 2000;
     }
 
     private static int parseInt(String value, int fallback) {
@@ -277,6 +389,10 @@ public final class EndlinkGuardExtension implements Extension {
                 # This Geyser instance accepts logins Endlink forged rather than ones Xbox signed, so
                 # it must never be reachable from outside this machine. Bind it to loopback and keep
                 # the allowlist below to loopback too.
+                #
+                # The keys above the divider are common to all three EndlinkGuard builds (stock,
+                # modified, geyser) and mean the same thing in each. Anything below it is specific to
+                # this build.
 
                 # Addresses allowed to reach this instance. Anything else is refused outright.
                 allowed_proxy_ips=127.0.0.1,0:0:0:0:0:0:0:1
@@ -288,14 +404,21 @@ public final class EndlinkGuardExtension implements Extension {
                 # A mismatch rejects every join, and says so in the log rather than failing open.
                 shared_secret=
 
-                # The verifier is on loopback, so this only ever matters when the proxy is wedged.
-                request_timeout_millis=2000
+                # How long to wait for the verifier to answer. It is on loopback in the usual layout,
+                # so this only matters when the proxy is wedged or reached across a network.
+                # Was request_timeout_millis before 1.1.0; that name still works.
+                request_timeout_seconds=2.0
 
                 # Replace the socket address forwarded to the Java server with the player's real one.
                 # Turning this off makes every proxied player share the proxy's IP on the far side,
                 # which means one IP ban there hits the whole network. Only disable to isolate a
                 # suspected fault in the address handling.
                 apply_real_ip=true
+
+                # Log what this extension decides for each join. Geyser exposes no interaction or
+                # movement events to extensions, so unlike the Endstone builds this cannot cover
+                # blocks or movement, and there is deliberately no debug_movement key here.
+                debug_interactions=false
                 """);
     }
 

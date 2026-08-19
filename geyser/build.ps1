@@ -58,6 +58,28 @@ $compiled = $LASTEXITCODE
 $ErrorActionPreference = $previous
 if ($compiled -ne 0) { throw "javac failed with exit code $compiled" }
 
+# The response validation is the security-critical half of this extension and is the one part that
+# does not need a running Geyser to exercise, so it runs on every build rather than by hand.
+$tests = Join-Path $project "tests"
+if (Test-Path $tests) {
+    Write-Host "==> testing" -ForegroundColor Cyan
+    $testOut = Join-Path $build "..\build-tests"
+    if (Test-Path $testOut) { Remove-Item $testOut -Recurse -Force }
+    New-Item -ItemType Directory -Path $testOut -Force | Out-Null
+
+    $testSources = Get-ChildItem $tests -Recurse -Filter *.java | ForEach-Object { $_.FullName }
+    $ErrorActionPreference = "Continue"
+    & javac -encoding UTF-8 -proc:none -classpath "$GeyserJar;$build" -d $testOut $testSources 2>&1 |
+        ForEach-Object { Write-Host "    $_" }
+    $testCompiled = $LASTEXITCODE
+    $ErrorActionPreference = $previous
+    if ($testCompiled -ne 0) { throw "test javac failed with exit code $testCompiled" }
+
+    & java -classpath "$GeyserJar;$build;$testOut" ValidateTest
+    if ($LASTEXITCODE -ne 0) { throw "ValidateTest failed" }
+    Remove-Item $testOut -Recurse -Force
+}
+
 Copy-Item (Join-Path $res "extension.yml") $build -Force
 
 Write-Host "==> packaging" -ForegroundColor Cyan
