@@ -129,5 +129,83 @@ class VerificationProtocolTest(unittest.TestCase):
                 )
 
 
+    def test_accepts_a_direct_frontend_that_has_no_xuid(self):
+        # A Java account admitted by a proxy plugin has no Xbox identity at all. Demanding digits of
+        # every player locked those out of every backend permanently.
+        account = "12345678-1234-5678-9abc-def012345678"
+        response = FakeResponse(
+            {
+                "name": "_Player",
+                "xuid": "",
+                "principal": "direct-frontend:java:" + account,
+                "uuid": account,
+            }
+        )
+        with patch.object(verification.urllib.request, "urlopen", return_value=response):
+            identity = verify_pending_join(
+                "http://127.0.0.1:19135/verify",
+                "test-secret",
+                name="_Player",
+                address="127.0.0.1",
+            )
+        self.assertEqual("", identity.xuid)
+        self.assertEqual("direct-frontend:java:" + account, identity.principal)
+
+    def test_rejects_a_missing_xuid_with_no_principal_to_vouch_for_it(self):
+        # An empty XUID on its own is a proxy that lost the player's identity, not a direct frontend.
+        response = FakeResponse(
+            {
+                "name": "Player One",
+                "xuid": "",
+                "uuid": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            }
+        )
+        with patch.object(verification.urllib.request, "urlopen", return_value=response):
+            with self.assertRaisesRegex(VerificationError, "invalid XUID"):
+                verify_pending_join(
+                    "http://127.0.0.1:19135/verify",
+                    "test-secret",
+                    name="Player One",
+                    address="127.0.0.1",
+                )
+
+    def test_rejects_a_direct_principal_bound_to_a_different_account(self):
+        # The principal carries the authenticated UUID. One that names a different account is not an
+        # identity this backend can vouch for.
+        response = FakeResponse(
+            {
+                "name": "_Player",
+                "xuid": "",
+                "principal": "direct-frontend:java:99999999-1234-5678-9abc-def012345678",
+                "uuid": "12345678-1234-5678-9abc-def012345678",
+            }
+        )
+        with patch.object(verification.urllib.request, "urlopen", return_value=response):
+            with self.assertRaisesRegex(VerificationError, "does not match its UUID"):
+                verify_pending_join(
+                    "http://127.0.0.1:19135/verify",
+                    "test-secret",
+                    name="_Player",
+                    address="127.0.0.1",
+                )
+
+    def test_rejects_a_principal_that_contradicts_its_xuid(self):
+        response = FakeResponse(
+            {
+                "name": "Player One",
+                "xuid": "2535459084817261",
+                "principal": "xbox-live:2535459084817262",
+                "uuid": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            }
+        )
+        with patch.object(verification.urllib.request, "urlopen", return_value=response):
+            with self.assertRaisesRegex(VerificationError, "does not match its XUID"):
+                verify_pending_join(
+                    "http://127.0.0.1:19135/verify",
+                    "test-secret",
+                    name="Player One",
+                    address="127.0.0.1",
+                )
+
 if __name__ == "__main__":
     unittest.main()

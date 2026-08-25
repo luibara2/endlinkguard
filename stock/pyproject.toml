@@ -9,7 +9,7 @@ build-backend = "hatchling.build"
 # be "endstone-endlinkguard". The import package stays `endlinkguard`; only the distribution is
 # renamed, so the runtime plugin name, data folder and config path are unchanged.
 name = "endstone-endlinkguard"
-version = "1.1.0"
+version = "1.2.0"
 description = "Verifies proxy joins on unmodified Endstone and exposes proxy-backed identity data."
 requires-python = ">=3.10"
 

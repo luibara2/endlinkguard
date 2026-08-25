@@ -23,6 +23,21 @@ public final class ValidateTest {
         check("matches the name case-insensitively",
                 accepted(validate, extension, good, "LUIBARA2"));
 
+        // A direct frontend - a Java account admitted by a proxy plugin - has no Xbox identity at
+        // all, and asserts an authority-qualified principal instead.
+        String account = "12345678-1234-5678-9abc-def012345678";
+        check("accepts a direct frontend that has no XUID",
+                accepted(validate, extension,
+                        direct("_luibara2", "direct-frontend:java:" + account, account), "_luibara2"));
+        check("rejects a missing XUID with no principal to vouch for it",
+                !accepted(validate, extension,
+                        body("luibara2", "", "3babcf62-2d0e-3952-bb4c-b90f73cd1ebe",
+                                "203.0.113.42", 42123), "luibara2"));
+        check("rejects a direct principal bound to a different account",
+                !accepted(validate, extension,
+                        direct("_luibara2", "direct-frontend:java:99999999-1234-5678-9abc-def012345678",
+                                account), "_luibara2"));
+
         check("rejects a name that is not the one asked about",
                 !accepted(validate, extension, good, "someone-else"));
         check("rejects a non-numeric XUID",
@@ -56,6 +71,12 @@ public final class ValidateTest {
             throw new AssertionError(failures + " geyser validation check(s) failed");
         }
         System.out.println("all geyser validation checks passed");
+    }
+
+    private static String direct(String name, String principal, String uuid) {
+        return "{\"status\":\"ok\",\"name\":\"" + name + "\",\"xuid\":\"\",\"uuid\":\"" + uuid
+                + "\",\"principal\":\"" + principal + "\",\"backend\":\"hub\","
+                + "\"real_ip\":\"203.0.113.42\",\"real_port\":42123}";
     }
 
     private static String body(String name, String xuid, String uuid, String realIp, int realPort) {

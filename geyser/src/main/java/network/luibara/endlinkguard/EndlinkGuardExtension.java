@@ -59,7 +59,16 @@ public final class EndlinkGuardExtension implements Extension {
     private static final Pattern RESPONSE_NAME = Pattern.compile("\"name\"\\s*:\\s*\"([^\"]*)\"");
     private static final Pattern RESPONSE_XUID = Pattern.compile("\"xuid\"\\s*:\\s*\"([^\"]*)\"");
     private static final Pattern RESPONSE_UUID = Pattern.compile("\"uuid\"\\s*:\\s*\"([^\"]*)\"");
+    private static final Pattern RESPONSE_PRINCIPAL = Pattern.compile("\"principal\"\\s*:\\s*\"([^\"]*)\"");
     private static final Pattern DIGITS = Pattern.compile("[0-9]+");
+    /**
+     * An authority-qualified principal for an account with no Xbox identity, as issued by the proxy.
+     * Mirrors the proxy's own {@code AuthData} pattern and the Python builds' {@code
+     * _DIRECT_PRINCIPAL}.
+     */
+    private static final Pattern DIRECT_PRINCIPAL = Pattern.compile(
+            "direct-frontend:[a-z0-9][a-z0-9._-]{0,63}:"
+                    + "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
 
     private Set<String> allowedProxyIps = Set.of();
     private String verifyUrl = "";
@@ -213,8 +222,9 @@ public final class EndlinkGuardExtension implements Extension {
      * <p>A 200 means the proxy accepted the join, but the response is not authenticated - only the
      * request is - and the address it carries is about to replace the one the Java server sees. So
      * the identity is checked rather than trusted: the name must be the player this extension asked
-     * about, the XUID must be digits, the UUID must parse, and the endpoint must be a real address
-     * in a legal port range. Anything else is refused, exactly as the Endstone builds refuse it.</p>
+     * about, the identity must be one of the two the proxy issues, the UUID must parse, and the
+     * endpoint must be a real address in a legal port range. Anything else is refused, exactly as
+     * the Endstone builds refuse it.</p>
      */
     private VerifyResult validate(String body, String requestedName) {
         String responseName = group(RESPONSE_NAME, body, "");
@@ -222,15 +232,34 @@ public final class EndlinkGuardExtension implements Extension {
             return new VerifyResult(false, "", 0, "proxy returned a different player name: " + responseName);
         }
 
-        String xuid = group(RESPONSE_XUID, body, "");
-        if (xuid.isEmpty() || !DIGITS.matcher(xuid).matches()) {
-            return new VerifyResult(false, "", 0, "proxy returned an invalid XUID");
-        }
-
+        String uuid = group(RESPONSE_UUID, body, "");
         try {
-            UUID.fromString(group(RESPONSE_UUID, body, ""));
+            UUID.fromString(uuid);
         } catch (IllegalArgumentException exception) {
             return new VerifyResult(false, "", 0, "proxy returned an invalid UUID");
+        }
+
+        // Two kinds of account reach a backend through the proxy and they are identified
+        // differently. An Xbox player has a numeric XUID. A direct frontend - a Java account
+        // admitted by a proxy plugin - deliberately has none and asserts an authority-qualified
+        // principal instead, so demanding digits of everyone locks those players out permanently.
+        //
+        // An empty XUID is still not accepted on its own, only when the proxy also returns a direct
+        // principal bound to the UUID in the same response. That keeps a proxy which has simply lost
+        // a player's identity from looking like a valid direct frontend.
+        String xuid = group(RESPONSE_XUID, body, "");
+        String principal = group(RESPONSE_PRINCIPAL, body, "");
+        if (!xuid.isEmpty()) {
+            if (!DIGITS.matcher(xuid).matches()) {
+                return new VerifyResult(false, "", 0, "proxy returned an invalid XUID");
+            }
+            if (!principal.isEmpty() && !principal.equals("xbox-live:" + xuid)) {
+                return new VerifyResult(false, "", 0, "proxy returned a principal that does not match its XUID");
+            }
+        } else if (!DIRECT_PRINCIPAL.matcher(principal).matches()) {
+            return new VerifyResult(false, "", 0, "proxy returned an invalid XUID");
+        } else if (!principal.endsWith(":" + uuid)) {
+            return new VerifyResult(false, "", 0, "proxy returned a principal that does not match its UUID");
         }
 
         String realIp = group(REAL_IP, body, "").trim();

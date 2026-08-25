@@ -16,9 +16,17 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import re
 import uuid
 from dataclasses import dataclass
 from ipaddress import ip_address
+
+# An authority-qualified principal for an account with no Xbox identity, as issued by the proxy:
+# "direct-frontend:<frontend-id>:<authenticated-uuid>". Mirrors AuthData's own pattern.
+_DIRECT_PRINCIPAL = re.compile(
+    r"direct-frontend:[a-z0-9][a-z0-9._-]{0,63}:"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+)
 
 
 class VerificationError(RuntimeError):
@@ -29,6 +37,7 @@ class VerificationError(RuntimeError):
 class VerifiedIdentity:
     name: str
     xuid: str
+    principal: str
     unique_id: str
     backend: str
     real_ip: str
@@ -99,6 +108,9 @@ def verify_pending_join(
         response_name = str(payload["name"])
         response_xuid = str(payload["xuid"])
         response_uuid = str(payload["uuid"])
+        # Optional so a proxy older than the direct-frontend contract still verifies: it simply
+        # never sends an empty XUID, and the branch below that needs a principal is never taken.
+        response_principal = str(payload.get("principal") or "")
         backend = str(payload.get("backend") or "")
         real_ip = str(payload.get("real_ip") or "").strip()
         real_port = int(payload.get("real_port") or 0)
@@ -107,12 +119,29 @@ def verify_pending_join(
 
     if response_name.casefold() != str(name).casefold():
         raise VerificationError("proxy returned a different player name")
-    if not response_xuid.isascii() or not response_xuid.isdigit():
-        raise VerificationError("proxy returned an invalid XUID")
     try:
         response_uuid = str(uuid.UUID(response_uuid))
     except (ValueError, AttributeError) as exc:
         raise VerificationError("proxy returned an invalid UUID") from exc
+
+    # Two kinds of account reach a backend through the proxy and they are identified differently.
+    # An Xbox player has a numeric XUID. A direct frontend - a Java account admitted by a proxy
+    # plugin - deliberately has none, and asserts an authority-qualified principal instead, so
+    # demanding digits of everyone locks those players out permanently.
+    #
+    # An empty XUID is still not accepted on its own. It is accepted only when the proxy also
+    # returns a direct principal bound to the UUID in the same response, which is the invariant the
+    # proxy enforces when it mints one. That keeps a proxy which has simply lost a player's identity
+    # from looking like a valid direct frontend.
+    if response_xuid:
+        if not response_xuid.isascii() or not response_xuid.isdigit():
+            raise VerificationError("proxy returned an invalid XUID")
+        if response_principal and response_principal != "xbox-live:" + response_xuid:
+            raise VerificationError("proxy returned a principal that does not match its XUID")
+    elif not _DIRECT_PRINCIPAL.fullmatch(response_principal):
+        raise VerificationError("proxy returned an invalid XUID")
+    elif not response_principal.endswith(":" + response_uuid):
+        raise VerificationError("proxy returned a principal that does not match its UUID")
 
     try:
         real_ip = str(ip_address(real_ip)) if real_ip else ""
@@ -124,6 +153,7 @@ def verify_pending_join(
     return VerifiedIdentity(
         response_name,
         response_xuid,
+        response_principal,
         response_uuid,
         backend,
         real_ip,
