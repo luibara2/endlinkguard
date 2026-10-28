@@ -391,11 +391,7 @@ class EndlinkGuardPlugin(Plugin):
         if _safe_attr(player, "is_op") is True:
             return
         try:
-            player.is_op = True
-            try:
-                player.update_commands()
-            except Exception:
-                pass
+            _grant_operator(self.server, player)
             self.logger.info(
                 f"Restored proxy-persisted operator status for {player.name} "
                 f"(proxy_xuid={record.get('xuid', '')})."
@@ -548,5 +544,18 @@ def _safe_attr(obj: object, attr: str):
     except Exception as exc:
         return f"<error {exc}>"
 
+
+def _grant_operator(server, player) -> None:
+    name = str(player.name).replace('"', "")
+    try:
+        dispatched = bool(server.dispatch_command(server.command_sender, f'op "{name}"'))
+    except Exception:
+        dispatched = False
+    if not dispatched or _safe_attr(player, "is_op") is not True:
+        player.is_op = True
+    try:
+        player.update_commands()
+    except Exception:
+        pass
 
 __all__ = ["EndlinkGuardPlugin"]

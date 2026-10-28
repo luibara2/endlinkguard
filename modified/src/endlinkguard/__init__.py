@@ -275,8 +275,7 @@ class EndlinkGuardPlugin(Plugin):
         if not record or not bool(record.get("op")) or event.player.is_op:
             return
         try:
-            event.player.is_op = True
-            event.player.update_commands()
+            _grant_operator(self.server, event.player)
             self.logger.info(
                 f"Restored legacy proxy-persisted operator status for {event.player.name}."
             )
@@ -446,6 +445,19 @@ def _safe_attr(obj: object, attr: str):
     except Exception as exc:
         return f"<error {exc}>"
 
+
+def _grant_operator(server, player) -> None:
+    name = str(player.name).replace('"', "")
+    try:
+        dispatched = bool(server.dispatch_command(server.command_sender, f'op "{name}"'))
+    except Exception:
+        dispatched = False
+    if not dispatched or _safe_attr(player, "is_op") is not True:
+        player.is_op = True
+    try:
+        player.update_commands()
+    except Exception:
+        pass
 
 def _name_key(name: str) -> str:
     return str(name).casefold()

@@ -103,6 +103,7 @@ class PluginIdentityTest(unittest.TestCase):
         self.identity = VerifiedIdentity(
             "luibara2",
             "2535459084817261",
+            "",
             "3babcf62-2d0e-3952-bb4c-b90f73cd1ebe",
             "skygen",
             "203.0.113.42",
@@ -213,3 +214,61 @@ class VerificationCopiesTest(unittest.TestCase):
             modified,
             "stock and modified verification.py have drifted; copy one over the other",
         )
+
+
+class _OpServer:
+    def __init__(self, player, op_works=True):
+        self.command_sender = object()
+        self.commands = []
+        self._player = player
+        self._op_works = op_works
+
+    def dispatch_command(self, sender, command_line):
+        self.commands.append((sender, command_line))
+        if self._op_works:
+            self._player.is_op = True
+        return self._op_works
+
+
+class _OpPlayer:
+    def __init__(self):
+        self.name = "luibara2"
+        self.is_op = False
+        self.assignments = 0
+        self.commands_updated = 0
+
+    def __setattr__(self, key, value):
+        if key == "is_op" and "assignments" in self.__dict__:
+            self.__dict__["assignments"] += 1
+        object.__setattr__(self, key, value)
+
+    def update_commands(self):
+        self.commands_updated += 1
+
+
+class OperatorRestoreTest(unittest.TestCase):
+    def test_restore_runs_vanilla_op_so_the_client_gets_operator_abilities(self):
+        player = _OpPlayer()
+        server = _OpServer(player)
+        plugin_module._grant_operator(server, player)
+
+        self.assertEqual(server.commands, [(server.command_sender, 'op "luibara2"')])
+        self.assertTrue(player.is_op)
+        self.assertEqual(player.assignments, 1)
+        self.assertEqual(player.commands_updated, 1)
+
+    def test_falls_back_to_is_op_when_the_command_fails(self):
+        player = _OpPlayer()
+        server = _OpServer(player, op_works=False)
+        plugin_module._grant_operator(server, player)
+
+        self.assertTrue(player.is_op)
+        self.assertEqual(player.commands_updated, 1)
+
+    def test_quotes_in_a_name_cannot_break_out_of_the_command(self):
+        player = _OpPlayer()
+        player.name = 'a" @a "b'
+        server = _OpServer(player)
+        plugin_module._grant_operator(server, player)
+
+        self.assertEqual(server.commands[0][1], 'op "a @a b"')
