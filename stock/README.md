@@ -1,9 +1,14 @@
 # Backend verifier for stock Endstone
 
-This is the legacy `0.1.7` verifier for an **unmodified/official Endstone**
+This is the verifier for an **unmodified/official Endstone**
 runtime. It verifies that backend joins came through endstone-proxy, stores the
 proxy-returned identity, exposes `get_real_xuid()`, and preserves the legacy
 proxy-backed operator store.
+
+Stored operator status is restored one second after a player joins. This lets
+the Bedrock client finish joining before EndlinkGuard sends the native OP
+abilities; if BDS already considers the player an operator, the plugin refreshes
+those abilities with `deop` and `op`.
 
 It also exposes the authenticated client endpoint through Python's
 `Player.address` property. Plugins such as EndstoneIpLogger that read

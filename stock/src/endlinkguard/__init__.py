@@ -142,13 +142,14 @@ def _install_address_patch(logger) -> None:
 
 class EndlinkGuardPlugin(Plugin):
     name = "endlinkguard"
-    version = "1.2.0"
+    version = "1.2.1"
     api_version = "0.10"
     description = "Rejects direct backend joins unless endstone-proxy verifies the login."
 
     def on_enable(self) -> None:
         self.save_default_config()
         self._verified_players = {}
+        self._operator_restore_sessions = {}
         self._identity_store = self._load_json(
             "proxy-identities.json", {"version": 1, "players": {}}
         )
@@ -245,7 +246,7 @@ class EndlinkGuardPlugin(Plugin):
 
     @event_handler
     def on_player_join(self, event: PlayerJoinEvent) -> None:
-        self._restore_stored_permissions(event.player)
+        self._schedule_stored_permissions_restore(event.player)
         if not self._debug_enabled():
             return
         player = event.player
@@ -262,7 +263,9 @@ class EndlinkGuardPlugin(Plugin):
 
     @event_handler(priority=EventPriority.MONITOR)
     def on_player_quit(self, event: PlayerQuitEvent) -> None:
-        self._verified_players.pop(_name_key(event.player.name), None)
+        key = _name_key(event.player.name)
+        self._verified_players.pop(key, None)
+        self._operator_restore_sessions.pop(key, None)
 
     @event_handler(priority=EventPriority.MONITOR)
     def on_server_command(self, event: ServerCommandEvent) -> None:
@@ -376,7 +379,7 @@ class EndlinkGuardPlugin(Plugin):
         self._identity_store.setdefault("players", {})[key] = stored_identity
         self._save_json("proxy-identities.json", self._identity_store)
 
-    def _restore_stored_permissions(self, player) -> None:
+    def _schedule_stored_permissions_restore(self, player) -> None:
         if not self._permission_store_enabled():
             return
         record = self._stored_permission_record(player.name)
@@ -388,9 +391,30 @@ class EndlinkGuardPlugin(Plugin):
                 "leaving permissions as-is."
             )
             return
-        if _safe_attr(player, "is_op") is True:
+        key = _name_key(player.name)
+        session = object()
+        self._operator_restore_sessions[key] = session
+        self.server.scheduler.run_task(
+            self, lambda: self._restore_stored_permissions(key, session), delay=20
+        )
+
+    def _restore_stored_permissions(self, key, session) -> None:
+        if self._operator_restore_sessions.get(key) is not session:
+            return
+        self._operator_restore_sessions.pop(key, None)
+        player = next(
+            (player for player in self.server.online_players if _name_key(player.name) == key),
+            None,
+        )
+        if player is None:
+            return
+        record = self._stored_permission_record(player.name)
+        if not record or not bool(record.get("op")):
             return
         try:
+            if _safe_attr(player, "is_op") is True:
+                name = str(player.name).replace('"', "")
+                self.server.dispatch_command(self.server.command_sender, f'deop "{name}"')
             _grant_operator(self.server, player)
             self.logger.info(
                 f"Restored proxy-persisted operator status for {player.name} "

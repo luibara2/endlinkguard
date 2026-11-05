@@ -230,3 +230,58 @@ class OperatorRestoreTest(unittest.TestCase):
         plugin_module._grant_operator(server, player)
 
         self.assertEqual(server.commands[0][1], 'op "a @a b"')
+
+
+class DelayedOperatorRestoreTest(unittest.TestCase):
+    def setUp(self):
+        self.player = _OpPlayer()
+        self.tasks = []
+        self.commands = []
+        self.server = types.SimpleNamespace(
+            command_sender=object(),
+            online_players=[self.player],
+            scheduler=types.SimpleNamespace(run_task=self.schedule),
+            dispatch_command=self.dispatch,
+        )
+        self.plugin = object.__new__(plugin_module.EndlinkGuardPlugin)
+        self.plugin.server = self.server
+        self.plugin.config = {"proxy_permission_store_enabled": True}
+        self.plugin.logger = _Logger()
+        self.plugin._operator_restore_sessions = {}
+        self.plugin._verified_players = {}
+        self.plugin._stored_permission_record = lambda _name: {"op": True, "xuid": "123"}
+
+    def schedule(self, _plugin, callback, delay):
+        self.tasks.append((callback, delay))
+
+    def dispatch(self, _sender, command):
+        self.commands.append(command)
+        self.player.is_op = command.startswith("op ")
+        return True
+
+    def test_restore_waits_for_join_and_refreshes_an_existing_op(self):
+        self.player.is_op = True
+        self.plugin.on_player_join(types.SimpleNamespace(player=self.player))
+
+        self.assertEqual(self.commands, [])
+        self.assertEqual(self.tasks[0][1], 20)
+        self.tasks[0][0]()
+
+        self.assertEqual(self.commands, ['deop "luibara2"', 'op "luibara2"'])
+        self.assertTrue(self.player.is_op)
+
+    def test_restore_is_cancelled_when_player_quits(self):
+        self.plugin.on_player_join(types.SimpleNamespace(player=self.player))
+        self.plugin.on_player_quit(types.SimpleNamespace(player=self.player))
+        self.tasks[0][0]()
+
+        self.assertEqual(self.commands, [])
+
+    def test_restore_only_uses_the_current_session(self):
+        self.plugin.on_player_join(types.SimpleNamespace(player=self.player))
+        self.plugin.on_player_join(types.SimpleNamespace(player=self.player))
+        self.tasks[0][0]()
+        self.assertEqual(self.commands, [])
+
+        self.tasks[1][0]()
+        self.assertEqual(self.commands, ['op "luibara2"'])

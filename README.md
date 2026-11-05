@@ -24,6 +24,10 @@ server side.
 > **What is tested and working: Endstone on Minecraft 1.26.40, behind an Endlink proxy on 1.26.40.**
 > Direct joins are rejected and proxied joins verified. Other versions are less certain.
 
+Operator restoration was also tested with a Minecraft 1.26.62 client, Endlink 0.6.0, and official
+Endstone 0.11.15 on Bedrock Dedicated Server 1.26.60.6. The client could break blocks after rejoining
+with an operator record in `proxy-permissions.json`.
+
 ## Which build to install
 
 **Never install more than one on a backend.**

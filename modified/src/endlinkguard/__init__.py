@@ -107,7 +107,7 @@ class EndlinkGuardPlugin(Plugin):
     # Keep the original plugin name/data folder so proxy-identities.json and
     # proxy-permissions.json from verifier 0.1.x remain available.
     name = "endlinkguard"
-    version = "1.2.0"
+    version = "1.2.1"
     api_version = "0.10"
     description = "Restores proxy player XUID before BDS loads native player data."
 
